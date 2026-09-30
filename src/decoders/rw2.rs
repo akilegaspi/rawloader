@@ -33,6 +33,7 @@ impl<'a> Decoder for Rw2Decoder<'a> {
         height = fetch_tag!(raw, Tag::PanaLength).get_usize(0);
         let offset = fetch_tag!(raw, Tag::PanaOffsets).get_usize(0);
         let src = &self.buffer[offset..];
+        Rw2Decoder::check_panasonic_buf(src, width, height)?;
         Rw2Decoder::decode_panasonic(src, width, height, true, dummy)
       } else {
         let raw = fetch_ifd!(&self.tiff, Tag::StripOffsets);
@@ -46,6 +47,7 @@ impl<'a> Decoder for Rw2Decoder<'a> {
         } else if src.len() >= width*height*3/2 {
           decode_12le_wcontrol(src, width, height, dummy)
         } else {
+          Rw2Decoder::check_panasonic_buf(src, width, height)?;
           Rw2Decoder::decode_panasonic(src, width, height, false, dummy)
         }
       }
@@ -84,6 +86,26 @@ impl<'a> Rw2Decoder<'a> {
       Ok([r, g, b, NAN])
     } else {
       Err("Couldn't find WB".to_string())
+    }
+  }
+
+  /// Minimum raw-section size `decode_panasonic` can address. Its bit-pump
+  /// offsets assume the classic 9/8-bytes-per-pixel packing; smaller buffers
+  /// (e.g. the ~1 byte/pixel compression written by the S5 II / G9 II
+  /// generation) would be sliced out of bounds on the decode threads. The
+  /// bound is the block-aligned offset of the last 5-row group, so it never
+  /// rejects files that decode fine today.
+  pub(crate) fn panasonic_min_buf_size(width: usize, height: usize) -> usize {
+    let row = height.saturating_sub(5);
+    let skip = ((width * row * 9) + (width/14 * 2 * row)) / 8;
+    (skip / 0x4000) * 0x4000
+  }
+
+  fn check_panasonic_buf(src: &[u8], width: usize, height: usize) -> Result<(),String> {
+    if src.len() < Rw2Decoder::panasonic_min_buf_size(width, height) {
+      Err(format!("RW2: raw section is {} bytes, too small for {}x{}; unsupported compression variant", src.len(), width, height))
+    } else {
+      Ok(())
     }
   }
 
